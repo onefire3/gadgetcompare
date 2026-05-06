@@ -28,6 +28,11 @@ export interface Smartphone {
   };
   rating: number;
   categories: ("flagship" | "mid-range" | "budget" | "gaming" | "camera")[];
+  flipkartData?: {
+    price: string;
+    title: string;
+    link: string;
+  };
 }
 
 export const SMARTPHONES: Smartphone[] = [
