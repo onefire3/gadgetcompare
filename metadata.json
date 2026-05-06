@@ -1,6 +1,6 @@
 {
-  "name": "TechCompare - Smartphone Comparison Tool",
-  "description": "A high-performance smartphone comparison web app with multi-device optimization, smart filters, and affiliate-ready commerce links.",
+  "name": "MobiSpec - Ultimate Phone Catalog",
+  "description": "A high-performance smartphone comparison web app with PWA support, multi-device optimization, smart filters, and real-time market data.",
   "requestFramePermissions": [],
   "majorCapabilities": []
 }

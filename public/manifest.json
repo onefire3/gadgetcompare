@@ -1,0 +1,22 @@
+{
+  "name": "MobiSpec - Ultimate Phone Catalog",
+  "short_name": "MobiSpec",
+  "description": "Compare lateast smartphones and view detailed specifications.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0f172a",
+  "theme_color": "#3b82f6",
+  "icons": [
+    {
+      "src": "https://img.icons8.com/parakeet/512/smartphone.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "https://img.icons8.com/parakeet/192/smartphone.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    }
+  ]
+}
