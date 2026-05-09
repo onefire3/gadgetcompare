@@ -303,12 +303,31 @@ async function startServer() {
           }
           return null;
         }
+      },
+      {
+        name: "Mock Fallback (Offline)",
+        host: "internal",
+        getUrl: () => "internal",
+        transform: () => {
+          // If public APIs are down, return some safe fallback
+          return [
+            { phone_custom_id: "samsung_galaxy_s24_ultra-12771", brand: "Samsung", device_name: "Galaxy S24 Ultra", image: "https://fdn2.gsmarena.com/vv/bigpic/samsung-galaxy-s24-ultra.jpg" },
+            { phone_custom_id: "apple_iphone_15_pro_max-12548", brand: "Apple", device_name: "iPhone 15 Pro Max", image: "https://fdn2.gsmarena.com/vv/bigpic/apple-iphone-15-pro-max.jpg" },
+            { phone_custom_id: "google_pixel_8_pro-12546", brand: "Google", device_name: "Pixel 8 Pro", image: "https://fdn2.gsmarena.com/vv/bigpic/google-pixel-8-pro.jpg" }
+          ];
+        }
       }
     ];
 
     for (const provider of latestProviders) {
       try {
         console.log(`[Latest Proxy] Trying ${provider.name}...`);
+        
+        if (provider.host === "internal") {
+          const results = provider.transform(null);
+          return res.json(results);
+        }
+
         const response = await fetch(provider.getUrl(), {
           headers: apiKey ? {
             "x-rapidapi-key": apiKey,
@@ -318,12 +337,14 @@ async function startServer() {
 
         if (response.ok) {
           const rawData = await response.json();
-          const results = provider.transform(rawData);
+          const results = (provider.transform as any)(rawData);
           if (results && results.length > 0) {
             console.log(`[Latest Proxy] Success with ${provider.name}. Found ${results.length} phones.`);
             setToCache(cacheKey, results);
             return res.json(results);
           }
+        } else {
+           console.warn(`[Latest Proxy] ${provider.name} failed with status: ${response.status}`);
         }
       } catch (err: any) {
         console.error(`[Latest Proxy] Error with ${provider.name}:`, err.message);

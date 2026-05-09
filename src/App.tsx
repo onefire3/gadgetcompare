@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, useRef } from "react";
 import { 
   Search, 
   Filter, 
@@ -15,6 +15,7 @@ import {
   MemoryStick, 
   Battery, 
   Camera, 
+  ChevronLeft,
   ChevronRight,
   TrendingUp,
   LayoutGrid,
@@ -25,11 +26,17 @@ import {
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { SMARTPHONES, Smartphone } from "./data";
+import { PhoneCard } from "./components/PhoneCard";
 
 export default function App() {
   const [searchQuery, setSearchQuery] = useState("");
+  const [debouncedSearchQuery, setDebouncedSearchQuery] = useState("");
+  const [isSearchMode, setIsSearchMode] = useState(false);
   const [liveSearchResults, setLiveSearchResults] = useState<any[]>([]);
-  const [latestDevices, setLatestDevices] = useState<Smartphone[]>([]);
+  const [devices, setDevices] = useState<Smartphone[]>(SMARTPHONES);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [brandSearch, setBrandSearch] = useState("");
+  const itemsPerPage = 9; // Grid friendly
   const [brandList, setBrandList] = useState<any[]>([]);
   const [isLoadingLatest, setIsLoadingLatest] = useState(false);
   const [isLoadingGrid, setIsLoadingGrid] = useState(false);
@@ -40,6 +47,21 @@ export default function App() {
   const [isCompareOpen, setIsCompareOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<"all" | "flagship" | "mid-range" | "budget">("all");
   const [isDarkMode, setIsDarkMode] = useState(true);
+  const searchRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handleEvents = (event: Event) => {
+      if (searchRef.current && !searchRef.current.contains(event.target as Node)) {
+        setLiveSearchResults([]);
+      }
+    };
+    document.addEventListener("mousedown", handleEvents as any);
+    document.addEventListener("scroll", handleEvents as any, true); // Capture scroll events everywhere
+    return () => {
+      document.removeEventListener("mousedown", handleEvents as any);
+      document.removeEventListener("scroll", handleEvents as any, true);
+    };
+  }, []);
 
   useEffect(() => {
     // Initial data fetch
@@ -75,7 +97,11 @@ export default function App() {
           categories: ["mid-range"]
         }));
         
-        setLatestDevices(mapped);
+        setDevices(prev => {
+          const existingIds = new Set(prev.map(p => p.id));
+          const newOnes = mapped.filter(m => !existingIds.has(m.id));
+          return [...prev, ...newOnes];
+        });
       } catch (err) {
         console.error("Failed to load latest devices", err);
       } finally {
@@ -131,7 +157,7 @@ export default function App() {
               categories: ["mid-range"]
             })).slice(0, 100);
             
-            setLatestDevices(prev => {
+            setDevices(prev => {
               const existingIds = new Set(prev.map(p => p.id));
               const newOnes = mapped.filter(m => !existingIds.has(m.id));
               return [...prev, ...newOnes];
@@ -161,16 +187,79 @@ export default function App() {
   const handleSearch = async (query: string) => {
     setSearchQuery(query);
     setSearchError(null);
+    setCurrentPage(1); // Reset to first page
     if (query.length < 3) {
       setLiveSearchResults([]);
       return;
     }
   };
 
-  // Debounced search effect
+  const performFullSearch = async () => {
+    if (searchQuery.length < 3) return;
+    
+    try {
+      setIsSearching(true);
+      const res = await fetch(`/api/search?query=${encodeURIComponent(searchQuery)}`);
+      const data = await res.json();
+      
+      let results = [];
+      if (data && data.status && Array.isArray(data.data)) {
+        results = data.data;
+      } else if (Array.isArray(data)) {
+        results = data;
+      }
+      
+      if (results.length > 0) {
+        const mapped: Smartphone[] = results.map((d: any) => ({
+          id: d.phone_custom_id || `search-${Math.random()}`,
+          name: d.device_name || d.phone_name,
+          brand: d.brand || (d.device_name || "").split(' ')[0],
+          price: 0,
+          currency: "USD",
+          releaseDate: "Search Result",
+          image: d.image || d.thumbnail || "https://images.unsplash.com/photo-1511707171634-5f897ff02aa9?q=80&w=800&auto=format&fit=crop",
+          affiliateUrl: "#",
+          specs: {
+            display: "Click for details",
+            processor: "Loading...",
+            ram: "N/A",
+            storage: "N/A",
+            battery: "N/A",
+            camera: { main: "N/A", front: "N/A" },
+            os: "N/A",
+            network: [],
+            weight: "N/A"
+          },
+          rating: 4.0,
+          categories: ["mid-range"]
+        }));
+
+        setDevices(prev => {
+          const existingIds = new Set(prev.map(p => p.id));
+          const newOnes = mapped.filter(m => !existingIds.has(m.id));
+          return [...newOnes, ...prev]; // Put new results at top
+        });
+        setIsSearchMode(true);
+        setLiveSearchResults([]);
+        setCurrentPage(1);
+      }
+    } catch (err) {
+      console.error("Full search failed", err);
+    } finally {
+      setIsSearching(false);
+    }
+  };
+
+  // Debounced search effect for both live results and local filtering
   useEffect(() => {
     const timer = setTimeout(async () => {
-      if (searchQuery.length < 3) return;
+      setDebouncedSearchQuery(searchQuery);
+      setCurrentPage(1); // Reset visible count on any search update
+      
+      if (searchQuery.length < 3) {
+        setLiveSearchResults([]);
+        return;
+      }
 
       try {
         setIsSearching(true);
@@ -263,6 +352,10 @@ export default function App() {
           console.error("Flipkart fetch failed", fkErr);
         }
 
+        const internalMem = findSpec("Memory", "Internal");
+        const ramMatch = internalMem.match(/(\d+GB)\s*RAM/i) || internalMem.match(/(\d+\s*GB)/i);
+        const storageMatch = internalMem.match(/(128GB|256GB|512GB|1TB|2TB)/i);
+
         const newPhone: Smartphone = {
           id: `live-${Date.now()}`,
           name: phoneName,
@@ -275,8 +368,8 @@ export default function App() {
           specs: {
             display: findSpec("Display", "Size"),
             processor: findSpec("Platform", "Chipset") || findSpec("Platform", "CPU"),
-            ram: findSpec("Memory", "Internal"),
-            storage: findSpec("Memory", "Internal"),
+            ram: ramMatch ? ramMatch[1] : (internalMem.split(" ")[1] || "N/A"),
+            storage: storageMatch ? storageMatch[1] : (internalMem.split(" ")[0] || "N/A"),
             battery: findSpec("Battery", "Type") || findSpec("Battery", "Capacity"),
             camera: {
               main: data.specifications?.find((s: any) => (s.title || s.category || "").toLowerCase().includes("main camera"))?.specs?.[0]?.val || 
@@ -293,6 +386,11 @@ export default function App() {
           flipkartData
         };
         
+        setDevices(prev => {
+          if (prev.some(p => p.id === newPhone.id)) return prev;
+          return [newPhone, ...prev];
+        });
+        
         setComparisonList(prev => {
           if (prev.some(p => p.name === newPhone.name)) return prev;
           if (prev.length >= 3) {
@@ -302,6 +400,7 @@ export default function App() {
         });
         setSearchQuery("");
         setLiveSearchResults([]);
+        setIsSearchMode(false); // Reset search mode to show the new item in catalog
         setIsCompareOpen(true);
       }
     } catch (err) {
@@ -314,8 +413,12 @@ export default function App() {
   const brands = useMemo(() => {
     const staticBrands = Array.from(new Set(SMARTPHONES.map(p => p.brand)));
     const apiBrands = brandList.map(b => b.brand_name);
-    return ["All", ...Array.from(new Set([...staticBrands, ...apiBrands]))].sort();
-  }, [brandList]);
+    const all = ["All", ...Array.from(new Set([...staticBrands, ...apiBrands]))].sort();
+    
+    if (!brandSearch) return all;
+    const query = brandSearch.toLowerCase();
+    return all.filter(b => b === "All" || b.toLowerCase().includes(query));
+  }, [brandList, brandSearch]);
 
   // Fetch models for a brand if selected
   useEffect(() => {
@@ -355,7 +458,7 @@ export default function App() {
             categories: ["mid-range"]
           }));
 
-          setLatestDevices(prev => {
+          setDevices(prev => {
             // Merge results, avoiding duplicates
             const existingIds = new Set(prev.map(p => p.id));
             const newOnes = mapped.filter(m => !existingIds.has(m.id));
@@ -373,15 +476,24 @@ export default function App() {
   }, [selectedBrand, brandList]);
 
   const filteredPhones = useMemo(() => {
-    const allPhones = [...SMARTPHONES, ...latestDevices];
+    const allPhones = devices;
+    const query = debouncedSearchQuery.toLowerCase();
     return allPhones.filter(phone => {
-      const matchesSearch = phone.name.toLowerCase().includes(searchQuery.toLowerCase()) || 
-                          phone.brand.toLowerCase().includes(searchQuery.toLowerCase());
+      const matchesSearch = query.length === 0 || 
+                          phone.name.toLowerCase().includes(query) || 
+                          phone.brand.toLowerCase().includes(query);
       const matchesBrand = selectedBrand === "All" || phone.brand === selectedBrand;
       const matchesTab = activeTab === "all" || phone.categories.includes(activeTab as any);
       return matchesSearch && matchesBrand && matchesTab;
     });
-  }, [searchQuery, selectedBrand, activeTab, latestDevices]);
+  }, [debouncedSearchQuery, selectedBrand, activeTab, devices]);
+
+  const totalPages = Math.ceil(filteredPhones.length / itemsPerPage);
+  
+  const pagedPhones = useMemo(() => {
+    const start = (currentPage - 1) * itemsPerPage;
+    return filteredPhones.slice(start, start + itemsPerPage);
+  }, [filteredPhones, currentPage, itemsPerPage]);
 
   const toggleComparison = async (phone: Smartphone) => {
     const isAlreadyInList = comparisonList.some(p => p.id === phone.id || p.name === phone.name);
@@ -411,11 +523,15 @@ export default function App() {
               return spec?.val || spec?.value || "N/A";
             };
 
-            fullPhoneDetail.specs = {
+            const internalMem = findSpec("Memory", "Internal");
+            const ramMatch = internalMem.match(/(\d+GB)\s*RAM/i) || internalMem.match(/(\d+\s*GB)/i);
+            const storageMatch = internalMem.match(/(128GB|256GB|512GB|1TB|2TB)/i);
+
+            const updatedSpecs = {
               display: findSpec("Display", "Size"),
               processor: findSpec("Platform", "Chipset") || findSpec("Platform", "CPU"),
-              ram: findSpec("Memory", "Internal"),
-              storage: findSpec("Memory", "Internal"),
+              ram: ramMatch ? ramMatch[1] : (internalMem.split(" ")[1] || "N/A"),
+              storage: storageMatch ? storageMatch[1] : (internalMem.split(" ")[0] || "N/A"),
               battery: findSpec("Battery", "Type") || findSpec("Battery", "Capacity"),
               camera: {
                 main: data.specifications?.find((s: any) => (s.title || s.category || "").toLowerCase().includes("main camera"))?.specs?.[0]?.val || 
@@ -427,6 +543,13 @@ export default function App() {
               network: [findSpec("Network", "Technology")],
               weight: findSpec("Body", "Weight")
             };
+
+            fullPhoneDetail.specs = updatedSpecs;
+
+            // Sync with catalog grid
+            setDevices(prev => 
+              prev.map(p => p.id === phone.id ? { ...p, specs: updatedSpecs } : p)
+            );
           }
         } catch (err) {
           console.error("Failed to fetch details for comparison", err);
@@ -484,14 +607,24 @@ export default function App() {
           </div>
 
           <div className="flex-1 max-w-xl mx-10">
-            <div className="relative group">
+            <div ref={searchRef} className="relative group">
               <Search className={`absolute left-4 top-1/2 -translate-y-1/2 text-text-muted group-focus-within:text-brand-blue transition-colors ${isSearching ? "animate-pulse" : ""}`} size={18} />
               <input 
                 type="text" 
                 placeholder="Search smartphones, brands, or specs..."
                 className="w-full bg-bg-input border border-border-subtle rounded-full py-2 pl-12 pr-4 text-sm focus:outline-none focus:border-brand-blue transition-all"
                 value={searchQuery}
+                onFocus={() => {
+                  if (searchQuery.length >= 3 && liveSearchResults.length === 0 && !isSearching) {
+                    handleSearch(searchQuery);
+                  }
+                }}
                 onChange={(e) => handleSearch(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    performFullSearch();
+                  }
+                }}
               />
 
               {/* Live Search Results Dropdown */}
@@ -521,7 +654,9 @@ export default function App() {
                         >
                           <div className="flex items-center gap-3">
                             <PhoneIcon size={16} className="text-brand-blue shrink-0" />
-                            <span className="text-sm font-medium text-text-main group-hover:text-brand-blue transition-colors line-clamp-1">{result.title || result.name || result.phone_name}</span>
+                            <span className="text-sm font-medium text-text-main group-hover:text-brand-blue transition-colors line-clamp-1">
+                              {result.device_name || result.phone_name || result.name || result.title || "Unknown Device"}
+                            </span>
                           </div>
                           <ChevronRight size={14} className="text-text-muted group-hover:translate-x-1 transition-transform shrink-0" />
                         </div>
@@ -565,67 +700,144 @@ export default function App() {
           </div>
         </nav>
 
-        <div className="flex flex-1 overflow-hidden">
+        <div className="flex-1 flex overflow-hidden relative">
+          {/* AdSense Placeholder - Sidebar Left (Hidden on small screens) */}
+          <div className="hidden 2xl:flex w-40 flex-col gap-4 p-4 border-r border-border-subtle bg-bg-card/20 items-center shrink-0">
+            <div className="w-full aspect-[1/4] bg-bg-input border border-dashed border-border-subtle rounded-xl flex items-center justify-center p-4 text-center">
+              <span className="text-[10px] font-black text-text-muted uppercase tracking-[0.2em] leading-tight">AdSense Vertical Placeholder</span>
+            </div>
+          </div>
+
           {/* Sidebar */}
-          <aside className="hidden lg:flex w-72 bg-bg-card/30 border-r border-border-subtle p-8 flex-col gap-8 overflow-y-auto no-scrollbar">
-            <section>
-              <span className="sidebar-label">Active Filters</span>
+          <aside className="hidden lg:flex w-80 bg-bg-card/30 border-r border-border-subtle p-8 flex-col gap-8 h-full sticky top-0 overflow-y-auto no-scrollbar shrink-0">
+            <section className="bg-bg-input/30 p-5 rounded-2xl border border-border-subtle/50 mb-4 sticky top-0 z-10 backdrop-blur-md">
+              <div className="flex items-center justify-between mb-4">
+                <div className="sidebar-label !mb-0 flex items-center gap-2">
+                  <Filter size={14} className="text-brand-blue" />
+                  Active Filters
+                </div>
+                {(activeTab !== "all" || selectedBrand !== "All" || debouncedSearchQuery) && (
+                  <button 
+                    onClick={() => {
+                      setActiveTab("all");
+                      setSelectedBrand("All");
+                      setSearchQuery("");
+                      setDebouncedSearchQuery("");
+                      setCurrentPage(1);
+                    }}
+                    className="text-[9px] font-black text-brand-pink uppercase tracking-widest hover:underline"
+                  >
+                    Reset
+                  </button>
+                )}
+              </div>
+              
               <div className="flex flex-wrap gap-2">
                 {activeTab !== "all" && (
-                  <span className="px-3 py-1.5 bg-brand-blue/10 border border-brand-blue/30 text-brand-blue text-[10px] font-bold rounded-lg flex items-center gap-2">
-                    {activeTab.toUpperCase()}
-                    <X size={12} className="cursor-pointer" onClick={() => setActiveTab("all")} />
+                  <span className="px-2.5 py-1.5 bg-brand-blue text-white text-[9px] font-black uppercase tracking-widest rounded-lg flex items-center gap-2 shadow-lg shadow-brand-blue/20">
+                    {activeTab}
+                    <X size={10} className="cursor-pointer hover:scale-125 transition-transform" onClick={() => { setActiveTab("all"); setCurrentPage(1); }} />
                   </span>
                 )}
                 {selectedBrand !== "All" && (
-                  <span className="px-3 py-1.5 bg-brand-green/10 border border-brand-green/30 text-brand-green text-[10px] font-bold rounded-lg flex items-center gap-2">
+                  <span className="px-2.5 py-1.5 bg-brand-green text-white text-[9px] font-black uppercase tracking-widest rounded-lg flex items-center gap-2 shadow-lg shadow-brand-green/20">
                     {selectedBrand}
-                    <X size={12} className="cursor-pointer" onClick={() => setSelectedBrand("All")} />
+                    <X size={10} className="cursor-pointer hover:scale-125 transition-transform" onClick={() => { setSelectedBrand("All"); setCurrentPage(1); }} />
                   </span>
                 )}
-                {activeTab === "all" && selectedBrand === "All" && (
-                  <span className="text-xs text-text-muted italic">No filters active</span>
+                {debouncedSearchQuery && (
+                  <span className="px-2.5 py-1.5 bg-text-main text-bg-deep text-[9px] font-black uppercase tracking-widest rounded-lg flex items-center gap-2">
+                    "{debouncedSearchQuery}"
+                    <X size={10} className="cursor-pointer hover:scale-125 transition-transform" onClick={() => { setSearchQuery(""); setDebouncedSearchQuery(""); setCurrentPage(1); }} />
+                  </span>
+                )}
+                {activeTab === "all" && selectedBrand === "All" && !debouncedSearchQuery && (
+                  <span className="text-[10px] text-text-muted font-bold italic opacity-40">Showing all models</span>
                 )}
               </div>
             </section>
 
             <section>
-              <span className="sidebar-label">Category</span>
+              <span className="sidebar-label">Price Point</span>
               <div className="space-y-4">
                 {(["all", "flagship", "mid-range", "budget"] as const).map(tab => (
                   <label key={tab} className="flex items-center gap-3 cursor-pointer group">
-                    <input 
-                      type="checkbox" 
-                      className="w-4 h-4 rounded border-border-subtle bg-bg-input text-brand-blue focus:ring-0" 
-                      checked={activeTab === tab}
-                      onChange={() => setActiveTab(tab)}
-                    />
-                    <span className={`text-sm font-medium transition-colors ${activeTab === tab ? "text-text-main" : "text-text-muted group-hover:text-text-main"}`}>
-                      {tab.charAt(0).toUpperCase() + tab.slice(1).replace("-", " ")}
+                    <div className="relative flex items-center justify-center">
+                      <input 
+                        type="checkbox" 
+                        className="peer appearance-none w-5 h-5 rounded-lg border-2 border-border-subtle bg-bg-input checked:bg-brand-blue checked:border-brand-blue transition-all" 
+                        checked={activeTab === tab}
+                        onChange={() => {
+                          setActiveTab(tab);
+                          setCurrentPage(1);
+                        }}
+                      />
+                      <Search size={10} className="absolute text-white scale-0 peer-checked:scale-100 transition-transform pointer-events-none" />
+                    </div>
+                    <span className={`text-sm font-bold transition-colors ${activeTab === tab ? "text-brand-blue" : "text-text-muted group-hover:text-text-main"}`}>
+                      {tab === "all" ? "All Price Ranges" : tab === "flagship" ? "Premium / Flagship" : tab === "mid-range" ? "Mid-range Value" : "Budget Friendly"}
                     </span>
                   </label>
                 ))}
               </div>
             </section>
 
-            <section className="flex flex-col flex-1 min-h-0">
-              <span className="sidebar-label">Top Brands</span>
-              <div className="space-y-4 overflow-y-auto pr-2 custom-scrollbar flex-1">
-                {brands.slice(0, 30).map(brand => (
+            <section className="flex flex-col min-h-0 space-y-4">
+              <span className="sidebar-label">Trending Models</span>
+              <div className="flex flex-col gap-2">
+                {[
+                  { name: "iPhone 15 Pro", id: "apple-iphone-15-pro-12557" },
+                  { name: "Galaxy S24", id: "samsung-galaxy-s24-12773" },
+                  { name: "Pixel 8 Pro", id: "google-pixel-8-pro-12545" }
+                ].map(model => (
+                  <button 
+                    key={model.id}
+                    onClick={() => fetchAndAddDevice(model.id)}
+                    className="text-left py-2 px-3 rounded-lg border border-transparent hover:border-brand-blue/30 hover:bg-brand-blue/5 transition-all group flex items-center justify-between"
+                  >
+                    <span className="text-xs font-bold text-text-muted group-hover:text-text-main transition-colors">{model.name}</span>
+                    <TrendingUp size={12} className="text-brand-blue opacity-0 group-hover:opacity-100 transition-opacity" />
+                  </button>
+                ))}
+              </div>
+            </section>
+
+            <section className="flex flex-col min-h-0 space-y-4">
+              <div className="flex items-center justify-between">
+                <span className="sidebar-label !mb-0">Brands</span>
+                <span className="text-[10px] font-black text-brand-blue uppercase tracking-widest">{brands.length - 1} AVAILABLE</span>
+              </div>
+              
+              <div className="relative">
+                <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-text-muted" />
+                <input 
+                  type="text"
+                  placeholder="Filter brands..."
+                  className="w-full bg-bg-input/50 border border-border-subtle rounded-xl py-2 pl-9 pr-3 text-xs focus:outline-none focus:border-brand-blue transition-all"
+                  value={brandSearch}
+                  onChange={(e) => setBrandSearch(e.target.value)}
+                />
+              </div>
+
+              <div className="space-y-1 overflow-y-auto pr-2 no-scrollbar flex-1 max-h-[400px] pb-4">
+                {brands.map(brand => (
                   <div 
                     key={brand} 
-                    onClick={() => setSelectedBrand(brand)}
+                    onClick={() => {
+                      setSelectedBrand(brand);
+                      setCurrentPage(1);
+                    }}
                     className={`flex items-center justify-between p-3 rounded-xl cursor-pointer transition-all border ${
                       selectedBrand === brand 
                       ? "bg-bg-input border-border-subtle shadow-inner" 
                       : "border-transparent hover:bg-bg-input/30"
                     }`}
                   >
-                    <span className={`text-sm font-medium ${selectedBrand === brand ? "text-text-main" : "text-text-muted"}`}>{brand}</span>
-                    <span className="text-[10px] font-bold text-text-muted">
+                    <span className={`text-sm font-bold ${selectedBrand === brand ? "text-text-main" : "text-text-muted"}`}>{brand}</span>
+                    <span className={`text-[10px] font-black p-1.5 rounded-lg transition-colors ${selectedBrand === brand ? "bg-brand-blue/10 text-brand-blue" : "text-text-muted group-hover:text-text-main"}`}>
                       {brand === "All" 
-                        ? [...SMARTPHONES, ...latestDevices].length 
-                        : [...SMARTPHONES, ...latestDevices].filter(p => p.brand === brand).length || (brandList.find(b => b.brand_name === brand)?.device_count)
+                        ? devices.length 
+                        : devices.filter(p => p.brand === brand).length || (brandList.find(b => b.brand_name === brand)?.device_count)
                       }
                     </span>
                   </div>
@@ -633,138 +845,222 @@ export default function App() {
               </div>
             </section>
 
-            {/* Ad Slot */}
-            <div className="mt-auto p-5 bg-linear-to-br from-brand-blue/5 to-brand-pink/5 border border-border-subtle rounded-2xl relative overflow-hidden group">
-              <div className="absolute top-0 right-0 p-2 opacity-10 group-hover:opacity-20 transition-opacity">
-                <TrendingUp size={48} />
+            {/* Sidebar AdSense Placeholder */}
+            <div className="mt-auto pt-6 border-t border-border-subtle">
+              <div className="w-full aspect-square bg-bg-input border border-dashed border-border-subtle rounded-2xl flex items-center justify-center p-6 text-center group">
+                <span className="text-[10px] font-black text-text-muted uppercase tracking-[0.2em] leading-tight opacity-40 group-hover:opacity-100 transition-opacity">AdSense Sticky Placeholder</span>
               </div>
-              <p className="text-[9px] font-bold text-text-muted mb-3 tracking-[0.2em]">SPONSORED</p>
-              <p className="text-sm font-bold text-text-main mb-1">Affiliate Booster</p>
-              <p className="text-xs text-text-muted mb-4 leading-relaxed">Join our partner network and earn through tech reviews.</p>
-              <button className="w-full py-2.5 bg-text-main text-bg-deep font-black text-[10px] rounded-lg uppercase tracking-widest hover:bg-opacity-90 transition-colors">
-                Learn More
-              </button>
             </div>
           </aside>
 
           {/* Main Content */}
-          <main className="flex-1 flex flex-col p-6 lg:p-10 overflow-y-auto no-scrollbar bg-[radial-gradient(circle_at_top_right,var(--bg-input),transparent_50%)]">
-            <header className="flex flex-col sm:flex-row justify-between items-start sm:items-end mb-10 gap-4 shrink-0">
-              <div>
-                <h1 className="text-4xl font-light text-text-main mb-2 tracking-tight">
-                  Comparison <span className="font-bold italic text-brand-blue">Grid</span>
-                </h1>
-                <p className="text-text-muted text-sm font-medium">Showing {filteredPhones.length} matching devices</p>
-              </div>
-              <div className="flex items-center gap-4 bg-bg-card p-1 rounded-xl border border-border-subtle shadow-xl self-end">
-                <button className="p-2 bg-bg-input rounded-lg text-text-main shadow-lg"><LayoutGrid size={18} /></button>
-              </div>
-            </header>
-
-            <div className="relative min-h-[400px]">
-              {isLoadingGrid || isLoadingLatest ? (
-                <div className="absolute inset-0 flex flex-col items-center justify-center bg-bg-deep/20 backdrop-blur-sm z-10 rounded-3xl">
-                  <div className="w-12 h-12 border-4 border-brand-blue border-t-transparent rounded-full animate-spin mb-4"></div>
-                  <p className="text-sm font-bold uppercase tracking-widest text-text-main animate-pulse">Populating market models...</p>
-                </div>
-              ) : filteredPhones.length === 0 ? (
-                <div className="flex flex-col items-center justify-center py-20 text-center">
-                  <Search size={48} className="text-text-muted mb-4 opacity-20" />
-                  <p className="text-lg font-bold text-text-main">No devices found</p>
-                  <p className="text-sm text-text-muted">Try adjusting your filters or search query</p>
-                </div>
-              ) : null}
-
-              <div className={`grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-8 pb-10 transition-opacity duration-300 ${isLoadingGrid ? "opacity-30 pointer-events-none" : "opacity-100"}`}>
-                {filteredPhones.map((phone, idx) => (
-                  <motion.div
-                    initial={{ opacity: 0, y: 20 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    transition={{ delay: idx * 0.05 }}
-                    key={phone.id}
-                    className="group flex flex-col bg-bg-card border border-border-subtle rounded-3xl overflow-hidden hover:border-slate-400 dark:hover:border-slate-600 hover:shadow-2xl transition-all"
-                  >
-                    <div className="h-64 bg-bg-input border-b border-border-subtle flex items-center justify-center p-8 relative overflow-hidden">
-                      <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,#3b82f610,transparent_70%)] opacity-0 group-hover:opacity-100 transition-opacity duration-700" />
-                      <img src={phone.image} alt={phone.name} className="h-full object-contain group-hover:scale-110 transition-transform duration-700 relative z-10" referrerPolicy="no-referrer" />
-                      
-                      <div className="absolute top-4 right-4 flex flex-col gap-2 scale-75 group-hover:scale-100 opacity-0 group-hover:opacity-100 transition-all">
-                        <button className="w-10 h-10 bg-bg-card/50 backdrop-blur rounded-full flex items-center justify-center text-text-main hover:text-brand-pink transition-colors shadow-sm">
-                          <Heart size={20} />
-                        </button>
-                        <button 
-                          onClick={() => toggleComparison(phone)}
-                          className={`w-10 h-10 rounded-full flex items-center justify-center transition-colors shadow-sm ${
-                            comparisonList.some(p => p.id === phone.id) 
-                            ? "bg-brand-blue text-white" 
-                            : "bg-bg-card/50 text-text-main hover:bg-bg-card/80"
-                          }`}
-                        >
-                          <ArrowRightLeft size={20} />
-                        </button>
-                      </div>
-                    </div>
-
-                    <div className="p-6 flex flex-col flex-1">
-                      <div className="flex justify-between items-start mb-4">
-                        <div>
-                          <p className="text-[10px] font-bold text-brand-blue uppercase tracking-widest mb-1">{phone.brand}</p>
-                          <h3 className="text-xl font-bold text-text-main group-hover:text-brand-blue transition-colors line-clamp-1">{phone.name}</h3>
-                        </div>
-                        <div className="text-right">
-                          <p className="text-lg font-bold text-text-main">{phone.price > 0 ? `$${phone.price}` : "TBD"}</p>
-                          <div className="flex items-center gap-1 text-amber-500 font-bold text-xs justify-end">
-                            <Star size={12} fill="currentColor" />
-                            <span>{phone.rating.toFixed(1)}</span>
-                          </div>
-                        </div>
-                      </div>
-
-                      <div className="space-y-3 mb-6">
-                        <div className="flex items-center justify-between text-xs py-2 border-b border-border-subtle/50">
-                          <span className="text-text-muted">Chipset</span>
-                          <span className="text-text-main font-medium line-clamp-1">{phone.specs.processor}</span>
-                        </div>
-                        <div className="flex items-center justify-between text-xs py-2 border-b border-border-subtle/50">
-                          <span className="text-text-muted">Memory</span>
-                          <span className="text-text-main font-medium">{phone.specs.ram}</span>
-                        </div>
-                        <div className="flex items-center justify-between text-xs py-2">
-                          <span className="text-text-muted">Battery</span>
-                          <span className="text-brand-green font-medium">{phone.specs.battery}</span>
-                        </div>
-                      </div>
-
-                      <div className="flex items-center gap-3 mt-auto">
-                        <button 
-                          onClick={() => toggleComparison(phone)}
-                          className="flex-1 bg-brand-pink hover:bg-opacity-90 text-white p-3 rounded-xl font-bold text-xs text-center transition-all uppercase tracking-widest shadow-lg shadow-brand-pink/10"
-                        >
-                          {phone.specs.processor === "Loading..." ? "Details" : "Compare"}
-                        </button>
-                        <button 
-                          onClick={() => toggleComparison(phone)}
-                          className={`w-12 h-12 rounded-xl flex items-center justify-center transition-all ${
-                            comparisonList.some(p => p.id === phone.id) 
-                            ? "bg-brand-blue/20 text-brand-blue border border-brand-blue/30" 
-                            : "bg-bg-input text-text-muted hover:bg-slate-200 dark:hover:bg-slate-800 border border-transparent"
-                          }`}
-                        >
-                          <ArrowRightLeft size={18} />
-                        </button>
-                      </div>
-                    </div>
-                  </motion.div>
-                ))}
+          <main className="flex-1 flex flex-col p-6 lg:p-10 overflow-y-auto no-scrollbar bg-[radial-gradient(circle_at_top_right,var(--bg-input),transparent_50%)] relative">
+            {/* AdSense Top Banner Placeholder */}
+            <div className="w-full h-24 bg-bg-card border border-dashed border-border-subtle rounded-3xl mb-10 flex items-center justify-center shadow-xl group shrink-0">
+              <div className="flex flex-col items-center gap-1 opacity-30 group-hover:opacity-100 transition-all">
+                <span className="text-[10px] font-black text-text-muted uppercase tracking-[0.4em]">AdSense Leaderboard Placeholder</span>
+                <span className="text-[8px] text-text-muted italic">Optimized for high CTR (728 x 90)</span>
               </div>
             </div>
 
-            <footer className="mt-auto pt-8 border-t border-border-subtle/50 flex flex-col md:flex-row justify-between items-center gap-6 text-[10px] text-text-muted font-bold uppercase tracking-widest italic shrink-0">
-              <p>* Prices vary by region. Affiliate links help support our research.</p>
+            <header className="flex flex-col gap-8 mb-10 shrink-0">
+              <div className="flex flex-col sm:flex-row justify-between items-start sm:items-end gap-4">
+                {isSearchMode ? (
+                  <div className="flex-1">
+                    <div className="flex items-center gap-3 mb-2">
+                      <button 
+                        onClick={() => {
+                          setIsSearchMode(false);
+                          setSearchQuery("");
+                          setDebouncedSearchQuery("");
+                        }}
+                        className="p-2 hover:bg-bg-input rounded-lg text-brand-blue transition-colors"
+                      >
+                        <X size={20} />
+                      </button>
+                      <h1 className="text-3xl font-bold text-text-main tracking-tight">
+                        Search <span className="italic text-brand-blue">Results</span>
+                      </h1>
+                    </div>
+                    <p className="text-text-muted text-sm font-medium">
+                      Found {filteredPhones.length} matches for <span className="text-brand-pink font-bold">"{debouncedSearchQuery}"</span>
+                    </p>
+                  </div>
+                ) : (
+                  <div>
+                    <h1 className="text-4xl font-light text-text-main mb-2 tracking-tight">
+                      Discovery <span className="font-bold italic text-brand-blue">Catalog</span>
+                    </h1>
+                    <p className="text-text-muted text-sm font-medium">Displaying specialized tech across {totalPages} pages</p>
+                  </div>
+                )}
+                <div className="flex items-center gap-4 bg-bg-card p-1 rounded-xl border border-border-subtle shadow-xl self-end">
+                  <button className="p-2 bg-bg-input rounded-lg text-text-main shadow-lg"><LayoutGrid size={18} /></button>
+                </div>
+              </div>
+
+              {/* Active Filter Chips Row */}
+              {(activeTab !== "all" || selectedBrand !== "All" || debouncedSearchQuery) && (
+                <div className="flex items-center gap-4 overflow-x-auto no-scrollbar pb-2 animate-in fade-in slide-in-from-top-4 duration-500">
+                  <div className="flex items-center gap-3 shrink-0">
+                    <Filter size={14} className="text-brand-blue" />
+                    <span className="text-[10px] font-black text-text-muted uppercase tracking-widest">Active Filters:</span>
+                  </div>
+                  <div className="flex gap-2">
+                    {activeTab !== "all" && (
+                      <div className="px-3 py-1.5 bg-brand-blue text-white text-[10px] font-black rounded-lg flex items-center gap-2 shadow-lg shadow-brand-blue/10">
+                        {activeTab.toUpperCase()}
+                        <X size={12} className="cursor-pointer hover:scale-110" onClick={() => { setActiveTab("all"); setCurrentPage(1); }} />
+                      </div>
+                    )}
+                    {selectedBrand !== "All" && (
+                      <div className="px-3 py-1.5 bg-brand-green text-white text-[10px] font-black rounded-lg flex items-center gap-2 shadow-lg shadow-brand-green/10">
+                        {selectedBrand.toUpperCase()}
+                        <X size={12} className="cursor-pointer hover:scale-110" onClick={() => { setSelectedBrand("All"); setCurrentPage(1); }} />
+                      </div>
+                    )}
+                    {debouncedSearchQuery && (
+                      <div className="px-3 py-1.5 bg-bg-input border border-border-subtle text-text-main text-[10px] font-black rounded-lg flex items-center gap-2 shadow-sm">
+                        "{debouncedSearchQuery.toUpperCase()}"
+                        <X size={12} className="cursor-pointer hover:scale-110" onClick={() => { setSearchQuery(""); setDebouncedSearchQuery(""); setCurrentPage(1); }} />
+                      </div>
+                    )}
+                    <button 
+                      onClick={() => {
+                        setActiveTab("all");
+                        setSelectedBrand("All");
+                        setSearchQuery("");
+                        setDebouncedSearchQuery("");
+                        setCurrentPage(1);
+                      }}
+                      className="px-3 py-1.5 text-[10px] font-black text-brand-pink uppercase tracking-widest hover:bg-brand-pink/10 rounded-lg transition-colors"
+                    >
+                      Clear All
+                    </button>
+                  </div>
+                </div>
+              )}
+            </header>
+
+            <div className="relative flex-1 min-h-[400px]">
+              {isLoadingGrid || isLoadingLatest ? (
+                <div className="absolute inset-0 flex flex-col items-center justify-center bg-bg-deep/20 backdrop-blur-sm z-10 rounded-3xl">
+                  <div className="w-12 h-12 border-4 border-brand-blue border-t-transparent rounded-full animate-spin mb-4"></div>
+                  <p className="text-sm font-bold uppercase tracking-widest text-text-main animate-pulse">Syncing market data...</p>
+                </div>
+              ) : null}
+
+              {/* Grid with in-grid Ad placeholder */}
+              <div className={`h-full transition-opacity duration-300 ${isLoadingGrid ? "opacity-30 pointer-events-none" : "opacity-100"}`}>
+                <div className="flex flex-col h-full items-center">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-8 w-full max-w-7xl">
+                    {pagedPhones.map((phone, idx) => (
+                      <div key={phone.id} className="h-[520px]">
+                        <PhoneCard 
+                          phone={phone} 
+                          toggleComparison={toggleComparison} 
+                          isComparing={comparisonList.some(p => p.id === phone.id)} 
+                        />
+                      </div>
+                    ))}
+                    
+                    {/* Native styled ad in grid */}
+                    {pagedPhones.length >= 3 && (
+                      <div className="h-[520px] bg-bg-card border border-dashed border-border-subtle rounded-[2.5rem] flex flex-col items-center justify-center p-12 text-center group">
+                        <div className="w-16 h-16 bg-bg-input rounded-2xl flex items-center justify-center mb-6 group-hover:scale-110 transition-transform">
+                          <LayoutGrid size={32} className="text-text-muted opacity-30" />
+                        </div>
+                        <span className="text-[10px] font-black text-text-muted uppercase tracking-[0.3em] mb-4">Native Ad Slot</span>
+                        <p className="text-xs text-text-muted font-medium leading-relaxed opacity-60">Highly relevant tech offers<br/>matching current segment</p>
+                      </div>
+                    )}
+                  </div>
+                  
+                {/* Numbered Pagination */}
+                {totalPages > 1 && (
+                  <div className="mt-20 mb-10 flex flex-col items-center gap-10 w-full">
+                    <div className="h-px w-64 bg-linear-to-r from-transparent via-border-subtle to-transparent" />
+                    
+                    <div className="flex items-center gap-4">
+                      <button 
+                        onClick={() => { setCurrentPage(prev => Math.max(1, prev - 1)); window.scrollTo({ top: 0, behavior: 'smooth' }); }}
+                        disabled={currentPage === 1}
+                        className="w-14 h-14 rounded-2xl flex items-center justify-center border border-border-subtle bg-bg-card text-text-main disabled:opacity-20 hover:bg-bg-input transition-all shadow-lg active:scale-95"
+                      >
+                        <ChevronLeft size={24} />
+                      </button>
+                      
+                      <div className="flex items-center gap-2 p-1.5 bg-bg-card border border-border-subtle rounded-2xl shadow-2xl">
+                        {Array.from({ length: totalPages }).map((_, i) => {
+                          const page = i + 1;
+                          if (totalPages > 7) {
+                            if (page > 1 && page < totalPages && Math.abs(page - currentPage) > 1) {
+                              if (page === 2 || page === totalPages - 1) return <span key={page} className="px-2 text-text-muted opacity-30 font-black">...</span>;
+                              return null;
+                            }
+                          }
+                          
+                          return (
+                            <button
+                              key={page}
+                              onClick={() => { setCurrentPage(page); window.scrollTo({ top: 0, behavior: 'smooth' }); }}
+                              className={`w-12 h-12 rounded-xl text-sm font-black transition-all ${
+                                currentPage === page 
+                                ? "bg-brand-blue text-white shadow-lg shadow-brand-blue/30 scale-110" 
+                                : "text-text-muted hover:bg-bg-input hover:text-text-main"
+                              }`}
+                            >
+                              {page}
+                            </button>
+                          );
+                        })}
+                      </div>
+
+                      <button 
+                        onClick={() => { setCurrentPage(prev => Math.min(totalPages, prev + 1)); window.scrollTo({ top: 0, behavior: 'smooth' }); }}
+                        disabled={currentPage === totalPages}
+                        className="w-14 h-14 rounded-2xl flex items-center justify-center border border-border-subtle bg-bg-card text-text-main disabled:opacity-20 hover:bg-bg-input transition-all shadow-lg active:scale-95"
+                      >
+                        <ChevronRight size={24} />
+                      </button>
+                    </div>
+                    
+                    {/* AdSense Bottom Banner */}
+                    <div className="w-full max-w-4xl h-32 bg-bg-card border border-dashed border-border-subtle rounded-3xl flex items-center justify-center shadow-inner group">
+                      <div className="flex flex-col items-center gap-1 opacity-20 group-hover:opacity-100 transition-all">
+                        <span className="text-[10px] font-black text-text-muted uppercase tracking-[0.5em]">AdSense Billboard Placeholder</span>
+                        <span className="text-[8px] text-text-muted italic">Contextual Catalog Ads (970 x 250)</span>
+                      </div>
+                    </div>
+
+                    <div className="bg-bg-input/60 px-6 py-2 rounded-full border border-border-subtle/50 shadow-inner">
+                        <span className="text-[10px] font-black text-text-muted uppercase tracking-[0.2em]">
+                          Viewing <span className="text-text-main">{pagedPhones.length}</span> models on page <span className="text-text-main">{currentPage}</span> of {totalPages}
+                        </span>
+                      </div>
+                    </div>
+                  )}
+                  
+                  {filteredPhones.length === 0 && !isLoadingGrid && (
+                    <div className="flex flex-col items-center justify-center py-20 text-center">
+                      <Search size={64} className="text-text-muted mb-6 opacity-10" />
+                      <h3 className="text-2xl font-bold text-text-main mb-2">No matches found</h3>
+                      <p className="text-text-muted max-w-xs">We couldn't find any devices matching your filters locally or in our quick database.</p>
+                      {debouncedSearchQuery && (
+                        <p className="text-brand-blue text-xs font-bold mt-4 animate-pulse">Try searching for "{debouncedSearchQuery}" in the search bar</p>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            <footer className="mt-20 pt-8 border-t border-border-subtle/50 flex flex-col md:flex-row justify-between items-center gap-6 text-[10px] text-text-muted font-bold uppercase tracking-widest italic shrink-0">
+              <p>* Specifications and availability may vary by region. Affiliate commissions help support our platform.</p>
               <div className="flex gap-8 not-italic">
-                <a href="#" className="hover:text-text-main transition-colors">Terms of Service</a>
-                <a href="#" className="hover:text-text-main transition-colors">Privacy Policy</a>
-                <a href="#" className="hover:text-text-main transition-colors">Country List</a>
+                <a href="#" className="hover:text-text-main transition-colors">Terms</a>
+                <a href="#" className="hover:text-text-main transition-colors">Privacy</a>
+                <a href="#" className="hover:text-text-main transition-colors">Ad Settings</a>
               </div>
             </footer>
           </main>
@@ -810,14 +1106,17 @@ export default function App() {
                         <div className="h-64 mb-8 flex items-end">
                           <span className="text-[10px] font-black text-text-muted uppercase tracking-[0.3em]">Hardware Specs</span>
                         </div>
-                        <div className="space-y-12 text-sm font-bold text-text-muted uppercase tracking-widest">
-                          <p className="h-8 flex items-center">Processor</p>
-                          <p className="h-8 flex items-center">Display</p>
-                          <p className="h-8 flex items-center">Memory</p>
-                          <p className="h-8 flex items-center">Energy</p>
-                          <p className="h-8 flex items-center">Imaging</p>
-                          <p className="h-8 flex items-center">Flipkart Price</p>
-                          <p className="h-8 flex items-center">MSRP</p>
+                        <div className="space-y-8 text-sm font-bold text-text-muted uppercase tracking-widest">
+                          <p className="h-10 flex items-center">Chipset</p>
+                          <p className="h-10 flex items-center">Display</p>
+                          <p className="h-10 flex items-center">Memory</p>
+                          <p className="h-10 flex items-center">Storage</p>
+                          <p className="h-10 flex items-center">Battery</p>
+                          <p className="h-10 flex items-center">Main Camera</p>
+                          <p className="h-10 flex items-center">Selfie Camera</p>
+                          <p className="h-10 flex items-center">OS / Weight</p>
+                          <p className="h-10 flex items-center">Buy (IN)</p>
+                          <p className="h-10 flex items-center">Price (Global)</p>
                         </div>
                       </div>
 
@@ -835,38 +1134,44 @@ export default function App() {
                             </button>
                           </div>
 
-                          <div className="space-y-12 text-sm text-text-main font-medium">
-                            <p className="h-8 flex items-center justify-center">{phone.specs.processor}</p>
-                            <p className="h-8 flex items-center justify-center leading-tight">{phone.specs.display}</p>
-                            <p className="h-8 flex items-center justify-center">{phone.specs.ram}</p>
-                            <p className="h-8 flex items-center justify-center text-brand-green">{phone.specs.battery}</p>
-                            <p className="h-8 flex items-center justify-center leading-tight">{phone.specs.camera.main}</p>
-                            <div className="h-8 flex flex-col items-center justify-center">
+                          <div className="space-y-8 text-sm text-text-main font-medium">
+                            <p className="h-10 flex items-center justify-center text-xs px-2 text-center leading-tight">{phone.specs.processor}</p>
+                            <p className="h-10 flex items-center justify-center leading-tight text-xs px-2 text-center">{phone.specs.display}</p>
+                            <p className="h-10 flex items-center justify-center font-bold text-brand-blue">{phone.specs.ram}</p>
+                            <p className="h-10 flex items-center justify-center text-xs px-2 text-center leading-tight">{phone.specs.storage}</p>
+                            <p className="h-10 flex items-center justify-center text-brand-green font-bold">{phone.specs.battery}</p>
+                            <p className="h-10 flex items-center justify-center leading-tight text-xs px-2 text-center">{phone.specs.camera.main}</p>
+                            <p className="h-10 flex items-center justify-center leading-tight text-xs px-2 text-center">{phone.specs.camera.front}</p>
+                            <div className="h-10 flex flex-col items-center justify-center leading-tight text-[10px] text-text-muted text-center">
+                              <span className="line-clamp-1">{phone.specs.os}</span>
+                              <span className="opacity-60">{phone.specs.weight}</span>
+                            </div>
+                            <div className="h-10 flex flex-col items-center justify-center">
                               {phone.flipkartData ? (
                                 <div className="flex flex-col items-center">
-                                  <span className="text-brand-blue font-bold">{phone.flipkartData.price}</span>
+                                  <span className="text-brand-blue font-bold text-xs">{phone.flipkartData.price}</span>
                                   <a 
                                     href={phone.flipkartData.link} 
                                     target="_blank" 
                                     rel="noopener noreferrer"
-                                    className="text-[9px] text-text-muted hover:text-brand-blue flex items-center gap-1 transition-colors"
+                                    className="text-[8px] text-text-muted hover:text-brand-blue flex items-center gap-1 transition-colors uppercase font-black"
                                   >
-                                    View on Flipkart <ExternalLink size={8} />
+                                    Buy Now <ExternalLink size={8} />
                                   </a>
                                 </div>
                               ) : (
-                                <span className="text-text-muted italic text-[10px]">Checking Flipkart...</span>
+                                <span className="text-text-muted italic text-[10px]">Unavailable</span>
                               )}
                             </div>
                             <div className="pt-4 flex flex-col items-center gap-4">
-                              <p className="text-2xl font-bold text-text-main">${phone.price}</p>
+                              <p className="text-xl font-bold text-text-main">${phone.price > 0 ? phone.price : "???"}</p>
                               <a 
                                 href={phone.affiliateUrl} 
                                 target="_blank" 
                                 rel="noopener noreferrer"
-                                className="w-full bg-brand-pink hover:bg-opacity-90 text-white py-3 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all shadow-lg shadow-brand-pink/10"
+                                className="w-full bg-brand-pink hover:bg-opacity-90 text-white py-2.5 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all shadow-lg shadow-brand-pink/10"
                               >
-                                View Deal
+                                View Specs
                               </a>
                             </div>
                           </div>
